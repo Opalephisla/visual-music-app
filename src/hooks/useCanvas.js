@@ -1,537 +1,383 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { getNoteColor, hexToRgb } from '../utils';
-import { Particle } from '../visualizers/effects';
-import { PERFORMANCE_CONFIG } from '../constants';
-import { getVisualConfig, INSTRUMENTS } from '../instruments';
 
-const KEYBOARD_HEIGHT = 100; // unscaled
+const KEYBOARD_HEIGHT = 100;
 
-export function useCanvas(canvasRef, { notes, visualSettings, midiData, quality, currentInstrument }) {
-  const ctxRef = useRef(null);
+export function useCanvas(canvasRef, { notes, visualSettings, midiData, quality }) {
+  const animationFrameRef = useRef();
   const particlesRef = useRef([]);
-  const lightBeamsRef = useRef([]);
-  const starsRef = useRef([]);
-  const lastFrameTimeRef = useRef(performance.now());
-  const statsRef = useRef({ fps: 0, active: 0 });
-  const animationFrameIdRef = useRef();
+  const statsRef = useRef({ fps: 60, active: 0 });
+  const lastTimeRef = useRef(performance.now());
 
-  const performanceConfig = PERFORMANCE_CONFIG[quality];
-  
-  // Get current instrument's visual configuration
-  const instrumentData = INSTRUMENTS[currentInstrument] || INSTRUMENTS['salamander-piano'];
-  const visualConfig = getVisualConfig(currentInstrument);
+  // Color function for notes
+  const getNoteColor = (pitch) => {
+    const colors = [
+      '#a855f7', '#d946ef', '#ec4899', '#f472b6', 
+      '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee',
+      '#67e8f9', '#c084fc', '#e879f9', '#f0abfc'
+    ];
+    const noteIndex = pitch.charCodeAt(0) % colors.length;
+    return colors[noteIndex];
+  };
 
+  // Calculate note position on piano
   const getNotePosition = useCallback((noteName) => {
     const canvas = canvasRef.current;
-    if (!canvas || !midiData.totalWhiteKeys) return { x: 0, isBlack: false, width: 0 };
-    const clientWidth = canvas.width / window.devicePixelRatio;
+    if (!canvas || !midiData.totalWhiteKeys) return { x: 50, width: 20, isBlack: false };
     
-    const flatToSharpMap = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
-    const map = { 'C': 0, 'C#': 0.5, 'D': 1, 'D#': 1.5, 'E': 2, 'F': 3, 'F#': 3.5, 'G': 4, 'G#': 4.5, 'A': 5, 'A#': 5.5, 'B': 6 };
+    const width = canvas.width;
+    const whiteKeyWidth = width / Math.max(midiData.totalWhiteKeys, 1);
     
-    let pitchName = noteName.replace(/[0-9]/g, '');
-    const octave = parseInt(noteName.slice(-1), 10);
-    if (flatToSharpMap[pitchName]) pitchName = flatToSharpMap[pitchName];
+    // Parse note name
+    const noteBase = noteName.slice(0, -1).replace('#', '');
+    const isSharp = noteName.includes('#');
+    const octave = parseInt(noteName.slice(-1)) || 4;
     
-    const isBlack = pitchName.includes('#');
-    const whiteKeyWidth = clientWidth / midiData.totalWhiteKeys;
-    const posInWhiteKeys = (octave - midiData.octaveRange.min) * 7 + Math.floor(map[pitchName] || 0);
-    let x = posInWhiteKeys * whiteKeyWidth + whiteKeyWidth / 2;
-    if (isBlack) x += whiteKeyWidth * 0.25;
+    // Map note names to positions
+    const noteMap = { 
+      'C': 0, 'D': 1, 'E': 2, 'F': 3, 'G': 4, 'A': 5, 'B': 6 
+    };
+    
+    // Calculate position
+    const notePosition = noteMap[noteBase] || 0;
+    const octaveOffset = (octave - (midiData.octaveRange.min || 3)) * 7;
+    const position = octaveOffset + notePosition;
+    
+    let x = position * whiteKeyWidth + whiteKeyWidth / 2;
+    
+    // Adjust for black keys
+    if (isSharp) {
+      // Black keys are between white keys
+      const blackKeyOffsets = {
+        'C#': 0.5, 'D#': 1.5, 'F#': 3.5, 'G#': 4.5, 'A#': 5.5
+      };
+      const blackNoteBase = noteBase + '#';
+      const offset = blackKeyOffsets[blackNoteBase] || 0;
+      x = (octaveOffset + offset) * whiteKeyWidth + whiteKeyWidth / 2;
+    }
+    
+    return { 
+      x, 
+      width: whiteKeyWidth,
+      isBlack: isSharp
+    };
+  }, [midiData, canvasRef]);
 
-    return { x, isBlack, width: whiteKeyWidth };
-  }, [canvasRef, midiData]);
-
-  const draw = useCallback((time) => {
-    const ctx = ctxRef.current;
+  // Main draw function
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!ctx || !canvas) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const clientWidth = canvas.width / dpr;
-    const clientHeight = canvas.height / dpr;
-    const pianoHeight = KEYBOARD_HEIGHT;
-    const hitLineY = clientHeight - pianoHeight;
-    let activeNoteCount = 0;
-
-    // 1. Clear and Draw Background
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    const width = canvas.width;
+    const height = canvas.height;
+    const time = Tone.Transport.seconds;
+    
+    // Clear canvas
     ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, clientWidth, clientHeight);
+    ctx.fillRect(0, 0, width, height);
     
-    // Enhanced background based on instrument type
-    if (visualSettings.background === 'starfield') {
-      starsRef.current.forEach(star => { star.update(canvas); star.draw(ctx); });
-    } else if (instrumentData.visualType === 'monumental') {
-      // Cathedral-like gradient background for organ
-      const grad = ctx.createLinearGradient(0, 0, 0, clientHeight);
-      grad.addColorStop(0, 'rgba(20, 15, 10, 0.3)');
-      grad.addColorStop(1, 'rgba(0, 0, 0, 1)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, clientWidth, clientHeight);
-    }
-
-    // 2. Draw Effects (Beams)
-    if (visualSettings.lightBeamsEnabled) {
-      lightBeamsRef.current = lightBeamsRef.current.filter(beam => beam.life > 0);
-      lightBeamsRef.current.forEach(beam => { 
-        beam.update(canvas); 
-        beam.draw(ctx, pianoHeight); 
-      });
-    }
-
-    // 3. Draw Falling/Rising Notes with instrument-specific styling
-    ctx.shadowBlur = instrumentData.visualType === 'crystalline' ? 15 : 
-                     instrumentData.visualType === 'electric' ? 20 : 12;
-    let notesDrawn = 0;
-    const maxVisibleNotes = performanceConfig.maxActiveNotes * 3;
-
-    if (visualSettings.noteFlow === 'anticipation') {
-        const pixelsPerSecond = (clientHeight - pianoHeight) / performanceConfig.noteRenderDistance;
-        notes.forEach(note => {
-            const timeUntilStart = note.time - time;
-            if (timeUntilStart < performanceConfig.noteRenderDistance && note.time + note.duration > time) {
-                if (notesDrawn++ > maxVisibleNotes) return;
-                const { x, isBlack, width } = getNotePosition(note.pitch);
-                const noteWidth = isBlack ? width * 0.5 : width * 0.8;
-                const h = note.duration * pixelsPerSecond;
-                const y = hitLineY - (timeUntilStart * pixelsPerSecond);
-                
-                // Use instrument's visual color or note color
-                const color = instrumentData.visualColor || getNoteColor(note.pitch);
-                
-                // Create instrument-specific note appearance
-                drawInstrumentNote(ctx, x, y, noteWidth, h, color, instrumentData.visualType, note.velocity);
-            }
-        });
-    } else { // 'reaction' flow
-        const pixelsPerSecond = 180;
-        notes.forEach(note => {
-            if (time >= note.time && time < note.time + note.duration) {
-                if (notesDrawn++ > maxVisibleNotes) return;
-                const { x, isBlack, width } = getNotePosition(note.pitch);
-                const noteWidth = isBlack ? width * 0.5 : width * 0.8;
-                const color = instrumentData.visualColor || getNoteColor(note.pitch);
-                const timeSinceStart = time - note.time;
-                const startY = hitLineY - (timeSinceStart * pixelsPerSecond);
-                const totalHeight = note.duration * pixelsPerSecond;
-                const opacity = Math.min(1.0, (note.time + note.duration - time) / 0.5);
-
-                ctx.globalAlpha = opacity;
-                drawInstrumentNote(ctx, x, startY, noteWidth, totalHeight, color, instrumentData.visualType, note.velocity);
-                ctx.globalAlpha = 1.0;
-            }
-        });
+    // Draw background gradient
+    if (visualSettings.background === 'gradient' || visualSettings.background === 'starfield') {
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, 'rgba(139, 92, 246, 0.05)');
+      gradient.addColorStop(0.5, 'rgba(139, 92, 246, 0.02)');
+      gradient.addColorStop(1, 'rgba(236, 72, 153, 0.05)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
     }
     
-    // 4. Draw Piano with instrument-specific styling
-    ctx.save();
-    ctx.translate(0, hitLineY);
+    const pianoY = height - KEYBOARD_HEIGHT;
     
-    // Piano background with subtle instrument theming
-    const pianoGrad = ctx.createLinearGradient(0, 0, 0, pianoHeight);
-    if (instrumentData.visualType === 'monumental') {
-      pianoGrad.addColorStop(0, '#2a2a2a');
-      pianoGrad.addColorStop(1, '#1a1a1a');
-    } else {
-      pianoGrad.addColorStop(0, '#ffffff');
-      pianoGrad.addColorStop(1, '#f0f0f0');
-    }
-    ctx.fillStyle = pianoGrad;
-    ctx.fillRect(0, 0, clientWidth, pianoHeight);
+    // ============= DRAW PIANO KEYS =============
     
-    // White key separators
-    ctx.strokeStyle = instrumentData.visualType === 'monumental' ? '#444' : '#cccccc';
-    ctx.lineWidth = 1;
-    const whiteKeyWidth = midiData.totalWhiteKeys > 0 ? clientWidth / midiData.totalWhiteKeys : 0;
-    for (let i = 1; i < midiData.totalWhiteKeys; i++) { 
-      ctx.beginPath(); 
-      ctx.moveTo(i * whiteKeyWidth, 0); 
-      ctx.lineTo(i * whiteKeyWidth, pianoHeight); 
-      ctx.stroke(); 
-    }
+    // Draw piano background
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, pianoY, width, KEYBOARD_HEIGHT);
     
-    // Black keys
-    ctx.fillStyle = instrumentData.visualType === 'monumental' ? '#0a0a0a' : '#000000';
-    for (let oct = midiData.octaveRange.min; oct <= midiData.octaveRange.max; oct++) {
-      for (const p of ['C#', 'D#', 'F#', 'G#', 'A#']) {
-        const { x } = getNotePosition(p + oct);
-        ctx.fillRect(x - whiteKeyWidth * 0.3, 0, whiteKeyWidth * 0.6, pianoHeight * 0.6);
-      }
-    }
+    // Calculate key dimensions
+    const totalWhiteKeys = midiData.totalWhiteKeys || 35;
+    const whiteKeyWidth = width / totalWhiteKeys;
+    const blackKeyWidth = whiteKeyWidth * 0.6;
+    const blackKeyHeight = KEYBOARD_HEIGHT * 0.65;
     
-    // Active keys with instrument-specific effects
-    notes.forEach(note => {
-      if (time >= note.time && time < note.time + note.duration) {
-        activeNoteCount++;
-        const { x, isBlack, width } = getNotePosition(note.pitch);
-        const color = instrumentData.visualColor || getNoteColor(note.pitch);
-        
-        drawActiveKey(ctx, x, width, isBlack, color, pianoHeight, instrumentData.visualType, note.velocity);
-      }
-    });
-    ctx.restore();
-
-    // 5. Draw Hit Line with instrument theming
-    ctx.save();
-    ctx.shadowColor = instrumentData.visualColor || '#a855f7';
-    ctx.shadowBlur = instrumentData.visualType === 'electric' ? 20 : 15;
-    ctx.strokeStyle = instrumentData.visualType === 'monumental' ? '#8B5A2B' : '#e9d5ff';
-    ctx.lineWidth = instrumentData.visualType === 'bass' ? 5 : 3;
-    ctx.beginPath(); 
-    ctx.moveTo(0, hitLineY); 
-    ctx.lineTo(clientWidth, hitLineY); 
-    ctx.stroke();
-    ctx.restore();
-    
-    // 6. Draw Particles with instrument-specific behavior
-    if (visualSettings.particlesEnabled) {
-      particlesRef.current = particlesRef.current.filter(p => p.life > 0);
-      particlesRef.current.forEach(p => { 
-        p.update(16.67); 
-        p.draw(ctx); 
-      });
-    }
-
-    // Update stats
-    const now = performance.now();
-    statsRef.current.fps = Math.round(1000 / (now - lastFrameTimeRef.current));
-    statsRef.current.active = activeNoteCount;
-    lastFrameTimeRef.current = now;
-  }, [notes, visualSettings, midiData, getNotePosition, performanceConfig, instrumentData]);
-
-  // Helper function to draw instrument-specific notes
-  const drawInstrumentNote = (ctx, x, y, width, height, color, visualType, velocity) => {
-    const intensity = velocity || 0.8;
-    
-    switch(visualType) {
-      case 'electric':
-        drawElectricNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'crystalline':
-        drawCrystallineNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'atmospheric':
-        drawAtmosphericNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'bass':
-        drawBassNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'strings':
-        drawStringsNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'brass':
-        drawBrassNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'wind':
-        drawWindNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'monumental':
-        drawMonumentalNote(ctx, x, y, width, height, color, intensity);
-        break;
-      case 'ethereal':
-        drawEtherealNote(ctx, x, y, width, height, color, intensity);
-        break;
-      default:
-        drawDefaultNote(ctx, x, y, width, height, color, intensity);
-        break;
-    }
-  };
-
-  // Individual note drawing functions
-  const drawElectricNote = (ctx, x, y, width, height, color, intensity) => {
-    const segments = Math.floor(height / 10) + 1;
-    const segmentHeight = height / segments;
-    
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width * 0.3;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 15 * intensity;
-    
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    for(let i = 1; i <= segments; i++) {
-      const jitter = (Math.random() - 0.5) * width * 0.2;
-      ctx.lineTo(x + jitter, y - segmentHeight * i);
-    }
-    ctx.stroke();
-  };
-
-  const drawCrystallineNote = (ctx, x, y, width, height, color, intensity) => {
-    const facets = 6;
-    ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 12 * intensity;
-    
-    for(let i = 0; i < facets; i++) {
-      const facetHeight = height / facets;
-      const facetY = y - (facetHeight * (i + 1));
-      const facetWidth = width * (0.5 + Math.sin(i) * 0.3);
+    // Draw white keys
+    for (let i = 0; i < totalWhiteKeys; i++) {
+      const x = i * whiteKeyWidth;
       
-      ctx.beginPath();
-      ctx.moveTo(x - facetWidth/2, facetY);
-      ctx.lineTo(x, facetY - facetHeight * 0.2);
-      ctx.lineTo(x + facetWidth/2, facetY);
-      ctx.lineTo(x, facetY + facetHeight * 0.8);
-      ctx.closePath();
-      ctx.fill();
-    }
-  };
-
-  const drawAtmosphericNote = (ctx, x, y, width, height, color, intensity) => {
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, `${color}00`); // Transparent
-    grad.addColorStop(0.3, `${color}66`); // Semi-transparent
-    grad.addColorStop(1, color);
-    
-    ctx.fillStyle = grad;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 25 * intensity;
-    
-    // Draw soft, wide beam
-    ctx.fillRect(x - width, y - height, width * 2, height);
-  };
-
-  const drawBassNote = (ctx, x, y, width, height, color, intensity) => {
-    const thickWidth = width * 1.5;
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, '#ffffff');
-    grad.addColorStop(1, color);
-    
-    ctx.fillStyle = grad;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 20 * intensity;
-    
-    // Draw thick, powerful note
-    ctx.fillRect(x - thickWidth/2, y - height, thickWidth, height);
-    
-    // Add pulse effect
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(x - thickWidth/2 - 2, y - height, thickWidth + 4, height);
-  };
-
-  const drawStringsNote = (ctx, x, y, width, height, color, intensity) => {
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, '#ffffff');
-    grad.addColorStop(1, color);
-    
-    ctx.fillStyle = grad;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 10 * intensity;
-    
-    // Draw main note
-    ctx.fillRect(x - width/2, y - height, width, height);
-    
-    // Add vibration lines
-    for(let i = 0; i < 3; i++) {
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = 0.3;
+      // White key background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x, pianoY, whiteKeyWidth - 1, KEYBOARD_HEIGHT);
+      
+      // Key border
+      ctx.strokeStyle = '#cccccc';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x - width/2 - 2 - i, y - height);
-      ctx.lineTo(x - width/2 - 2 - i, y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x + width/2 + 2 + i, y - height);
-      ctx.lineTo(x + width/2 + 2 + i, y);
+      ctx.moveTo(x + whiteKeyWidth - 1, pianoY);
+      ctx.lineTo(x + whiteKeyWidth - 1, height);
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
-  };
-
-  const drawBrassNote = (ctx, x, y, width, height, color, intensity) => {
-    // Golden gradient for brass
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, '#FFD700');
-    grad.addColorStop(0.5, color);
-    grad.addColorStop(1, '#B8860B');
     
-    ctx.fillStyle = grad;
-    ctx.shadowColor = '#FFD700';
-    ctx.shadowBlur = 15 * intensity;
+    // Draw black keys
+    const minOctave = midiData.octaveRange?.min || 2;
+    const maxOctave = midiData.octaveRange?.max || 6;
     
-    ctx.fillRect(x - width/2, y - height, width, height);
-  };
-
-  const drawWindNote = (ctx, x, y, width, height, color, intensity) => {
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 8 * intensity;
-    
-    // Draw flowing, undulating note
-    ctx.beginPath();
-    ctx.moveTo(x - width/2, y);
-    
-    const segments = Math.floor(height / 5);
-    for(let i = 0; i <= segments; i++) {
-      const segmentY = y - (height / segments) * i;
-      const flow = Math.sin(i * 0.5) * width * 0.2;
-      ctx.lineTo(x + flow, segmentY);
-    }
-    
-    for(let i = segments; i >= 0; i--) {
-      const segmentY = y - (height / segments) * i;
-      const flow = Math.sin(i * 0.5) * width * 0.2;
-      ctx.lineTo(x + flow - width, segmentY);
-    }
-    
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
-  };
-
-  const drawMonumentalNote = (ctx, x, y, width, height, color, intensity) => {
-    const monumentalWidth = width * 1.8;
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, '#8B4513'); // Saddle brown
-    grad.addColorStop(0.5, color);
-    grad.addColorStop(1, '#654321'); // Dark brown
-    
-    ctx.fillStyle = grad;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 30 * intensity;
-    
-    // Draw cathedral-like pillar
-    ctx.fillRect(x - monumentalWidth/2, y - height, monumentalWidth, height);
-    
-    // Add architectural details
-    ctx.strokeStyle = '#D2B48C'; // Tan
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x - monumentalWidth/2, y - height, monumentalWidth, height);
-  };
-
-  const drawEtherealNote = (ctx, x, y, width, height, color, intensity) => {
-    // Multiple overlapping translucent layers
-    for(let layer = 0; layer < 3; layer++) {
-      ctx.globalAlpha = 0.3;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 20 * intensity;
+    for (let oct = minOctave; oct <= maxOctave; oct++) {
+      // Black key pattern: C#, D#, (skip E#), F#, G#, A#, (skip B#)
+      const blackKeys = [
+        { note: 'C#', position: 0.5 },
+        { note: 'D#', position: 1.5 },
+        { note: 'F#', position: 3.5 },
+        { note: 'G#', position: 4.5 },
+        { note: 'A#', position: 5.5 }
+      ];
       
-      const layerWidth = width * (1 + layer * 0.3);
-      const grad = ctx.createRadialGradient(x, y - height/2, 0, x, y - height/2, layerWidth);
-      grad.addColorStop(0, color);
-      grad.addColorStop(1, `${color}00`);
-      
-      ctx.fillStyle = grad;
-      ctx.fillRect(x - layerWidth/2, y - height, layerWidth, height);
-    }
-    ctx.globalAlpha = 1;
-  };
-
-  const drawDefaultNote = (ctx, x, y, width, height, color, intensity) => {
-    const grad = ctx.createLinearGradient(x, y - height, x, y);
-    grad.addColorStop(0, '#ffffff');
-    grad.addColorStop(1, color);
-    ctx.fillStyle = grad;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 12 * intensity;
-    ctx.fillRect(x - width / 2, y - height, width, height);
-  };
-
-  // Helper function to draw active keys
-  const drawActiveKey = (ctx, x, width, isBlack, color, pianoHeight, visualType, velocity) => {
-    const intensity = velocity || 0.8;
-    const keyWidth = isBlack ? width * 0.6 : width * 0.9;
-    const keyHeight = isBlack ? pianoHeight * 0.6 : pianoHeight;
-    
-    switch(visualType) {
-      case 'electric':
-        ctx.fillStyle = color;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 25 * intensity;
-        // Add electric sparks effect
-        for(let i = 0; i < 3; i++) {
-          const sparkX = x + (Math.random() - 0.5) * keyWidth;
-          const sparkY = Math.random() * keyHeight;
-          ctx.fillRect(sparkX - 1, sparkY - 1, 2, 2);
+      blackKeys.forEach(({ note, position }) => {
+        const octaveOffset = (oct - minOctave) * 7;
+        const keyPosition = octaveOffset + position;
+        
+        if (keyPosition < totalWhiteKeys) {
+          const x = keyPosition * whiteKeyWidth;
+          
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(
+            x - blackKeyWidth / 2, 
+            pianoY, 
+            blackKeyWidth, 
+            blackKeyHeight
+          );
+          
+          // Add slight gradient to black keys
+          const blackGradient = ctx.createLinearGradient(
+            x - blackKeyWidth / 2, pianoY,
+            x - blackKeyWidth / 2, pianoY + blackKeyHeight
+          );
+          blackGradient.addColorStop(0, '#333333');
+          blackGradient.addColorStop(1, '#000000');
+          ctx.fillStyle = blackGradient;
+          ctx.fillRect(
+            x - blackKeyWidth / 2 + 1, 
+            pianoY + 1, 
+            blackKeyWidth - 2, 
+            blackKeyHeight - 1
+          );
         }
-        break;
-        
-      case 'monumental':
-        const monumentalGrad = ctx.createLinearGradient(x, 0, x, keyHeight);
-        monumentalGrad.addColorStop(0, '#8B4513');
-        monumentalGrad.addColorStop(1, color);
-        ctx.fillStyle = monumentalGrad;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 30 * intensity;
-        break;
-        
-      default:
-        ctx.fillStyle = color;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 15 * intensity;
-        break;
+      });
     }
     
-    ctx.globalAlpha = 0.8;
-    ctx.fillRect(x - keyWidth / 2, 0, keyWidth, keyHeight);
-    ctx.globalAlpha = 1;
-  };
-  
+    // Highlight active keys
+    if (notes && notes.length > 0) {
+      notes.forEach(note => {
+        if (!note.pitch || typeof note.time !== 'number') return;
+        
+        // Check if note is currently active
+        if (time >= note.time && time < note.time + (note.duration || 0.5)) {
+          const { x, width: keyWidth, isBlack } = getNotePosition(note.pitch);
+          const color = getNoteColor(note.pitch);
+          
+          if (isBlack) {
+            // Highlight black key
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 0.7;
+            ctx.fillRect(
+              x - blackKeyWidth / 2,
+              pianoY,
+              blackKeyWidth,
+              blackKeyHeight
+            );
+            
+            // Add glow
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 15;
+            ctx.fillRect(
+              x - blackKeyWidth / 2,
+              pianoY,
+              blackKeyWidth,
+              blackKeyHeight
+            );
+            ctx.shadowBlur = 0;
+          } else {
+            // Highlight white key
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 0.6;
+            ctx.fillRect(
+              x - keyWidth / 2,
+              pianoY,
+              keyWidth - 1,
+              KEYBOARD_HEIGHT
+            );
+            
+            // Add glow
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 20;
+            ctx.fillRect(
+              x - keyWidth / 2,
+              pianoY,
+              keyWidth - 1,
+              KEYBOARD_HEIGHT
+            );
+            ctx.shadowBlur = 0;
+          }
+          
+          ctx.globalAlpha = 1;
+        }
+      });
+    }
+    
+    // Draw hit line
+    ctx.strokeStyle = '#e9d5ff';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#a855f7';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(0, pianoY);
+    ctx.lineTo(width, pianoY);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    
+    // ============= DRAW FALLING NOTES =============
+    
+    if (notes && notes.length > 0) {
+      const pixelsPerSecond = 100;
+      let activeCount = 0;
+      
+      notes.forEach(note => {
+        if (!note.pitch || typeof note.time !== 'number') return;
+        
+        const noteY = pianoY - ((time - note.time) * pixelsPerSecond);
+        const noteHeight = (note.duration || 0.5) * pixelsPerSecond;
+        
+        // Only draw notes that are visible
+        if (noteY + noteHeight > 0 && noteY < height) {
+          const { x, width: keyWidth, isBlack } = getNotePosition(note.pitch);
+          const color = getNoteColor(note.pitch);
+          
+          // Note width based on key type
+          const noteWidth = isBlack ? keyWidth * 0.5 : keyWidth * 0.7;
+          
+          // Draw note with gradient
+          const noteGradient = ctx.createLinearGradient(
+            x - noteWidth / 2, noteY,
+            x + noteWidth / 2, noteY + noteHeight
+          );
+          noteGradient.addColorStop(0, color);
+          noteGradient.addColorStop(1, `${color}88`);
+          
+          ctx.fillStyle = noteGradient;
+          ctx.fillRect(x - noteWidth / 2, noteY, noteWidth, noteHeight);
+          
+          // Add glow effect
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 10;
+          ctx.fillRect(x - noteWidth / 2, noteY, noteWidth, Math.min(noteHeight, 20));
+          ctx.shadowBlur = 0;
+          
+          // Count active notes
+          if (time >= note.time && time < note.time + note.duration) {
+            activeCount++;
+          }
+        }
+      });
+      
+      statsRef.current.active = activeCount;
+    }
+    
+    // ============= DRAW PARTICLES =============
+    
+    if (visualSettings.particlesEnabled && particlesRef.current.length > 0) {
+      particlesRef.current = particlesRef.current.filter(p => p.life > 0);
+      
+      particlesRef.current.forEach(particle => {
+        particle.y -= particle.speed;
+        particle.life -= 0.01;
+        particle.x += Math.sin(particle.y * 0.01) * 0.5;
+        
+        ctx.fillStyle = particle.color;
+        ctx.globalAlpha = particle.life;
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      
+      ctx.globalAlpha = 1;
+    }
+    
+    // Update FPS
+    const now = performance.now();
+    const delta = now - lastTimeRef.current;
+    if (delta > 0) {
+      statsRef.current.fps = Math.round(1000 / delta);
+    }
+    lastTimeRef.current = now;
+  }, [notes, visualSettings, midiData, getNotePosition, canvasRef]);
+
   // Animation loop
   useEffect(() => {
-    const loop = () => {
-      const time = Tone.Transport.seconds;
-      draw(time);
-      animationFrameIdRef.current = requestAnimationFrame(loop);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const animate = () => {
+      draw();
+      animationFrameRef.current = requestAnimationFrame(animate);
     };
+    
+    animate();
+    
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [draw, canvasRef]);
 
-    if (visualSettings.playbackState === 'started') {
-      cancelAnimationFrame(animationFrameIdRef.current);
-      animationFrameIdRef.current = requestAnimationFrame(loop);
-    } else {
-      cancelAnimationFrame(animationFrameIdRef.current);
-    }
-    return () => cancelAnimationFrame(animationFrameIdRef.current);
-  }, [visualSettings.playbackState, draw]);
-
-  // Handle resizing and context initialization
+  // Canvas resize handler
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const resizeCanvas = () => {
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      const ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-      ctxRef.current = ctx;
-
-      if (visualSettings.background === 'starfield') {
-        starsRef.current = Array.from({ length: 200 }, () => new Particle());
-      }
-      draw(Tone.Transport.seconds); // Redraw on resize with current time
+    
+    const handleResize = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      draw();
     };
+    
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [draw, canvasRef]);
 
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
-  }, [canvasRef, visualSettings.background, draw]);
-  
+  // Note emitter for particle effects
   const noteEmitter = useCallback((note) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const { x, width } = getNotePosition(note.pitch);
-    const color = instrumentData.visualColor || getNoteColor(note.pitch);
-    const emissionY = canvas.height / window.devicePixelRatio - KEYBOARD_HEIGHT;
-    const visualType = instrumentData.visualType;
-
-    // Adjust particle count based on visual config
-    const particleMultiplier = visualConfig.particleCount / 6; // Base 6 particles
-    const adjustedParticleRate = Math.floor(performanceConfig.particleRate * particleMultiplier);
-
-    if (visualSettings.particlesEnabled && particlesRef.current.length < performanceConfig.maxParticles) {
-        for (let i = 0; i < adjustedParticleRate; i++) {
-            particlesRef.current.push(new Particle(x, emissionY, color, visualType));
-        }
+    if (!visualSettings.particlesEnabled) return;
+    
+    const { x } = getNotePosition(note.pitch);
+    const color = getNoteColor(note.pitch);
+    
+    // Add particles when note plays
+    for (let i = 0; i < 5; i++) {
+      particlesRef.current.push({
+        x: x + (Math.random() - 0.5) * 20,
+        y: canvasRef.current.height - KEYBOARD_HEIGHT,
+        speed: Math.random() * 2 + 1,
+        size: Math.random() * 3 + 1,
+        color: color,
+        life: 1
+      });
     }
     
-    if (visualSettings.lightBeamsEnabled && lightBeamsRef.current.length < 30) {
-        lightBeamsRef.current.push(new Particle(x, width, hexToRgb(color), visualType));
+    // Limit particles
+    if (particlesRef.current.length > 100) {
+      particlesRef.current = particlesRef.current.slice(-100);
     }
-  }, [visualSettings, performanceConfig, getNotePosition, canvasRef, instrumentData, visualConfig]);
+  }, [visualSettings, getNotePosition, canvasRef]);
 
-  return { noteEmitter, stats: statsRef.current };
+  return {
+    noteEmitter,
+    stats: statsRef.current
+  };
 }

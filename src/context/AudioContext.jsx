@@ -1,110 +1,73 @@
 import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
 import * as Tone from 'tone';
-import { INSTRUMENTS } from '../instruments';
-import { DEFAULT_AUDIO_SETTINGS } from '../constants';
 
 const AudioContext = createContext(null);
 
 export function AudioProvider({ children }) {
-  const instrumentsRef = useRef({});
+  const instrumentRef = useRef(null);
   const effectsRef = useRef({});
-  const currentInstrumentRef = useRef(null);
 
   const [isInitialized, setIsInitialized] = useState(false);
-  const [isInstrumentLoading, setIsInstrumentLoading] = useState(true);
-  const [instrument, setInstrument] = useState('');
+  const [isInstrumentLoading, setIsInstrumentLoading] = useState(false);
+  const [instrument, setInstrument] = useState('synth-piano');
   const [availableInstruments, setAvailableInstruments] = useState({});
-  const [instrumentErrors, setInstrumentErrors] = useState({});
-  
-  const [audioSettings, setAudioSettings] = useState(() => {
-    try {
-      const saved = localStorage.getItem('visualMusicInterpreter_audioSettings');
-      return saved ? { ...DEFAULT_AUDIO_SETTINGS, ...JSON.parse(saved) } : DEFAULT_AUDIO_SETTINGS;
-    } catch {
-      return DEFAULT_AUDIO_SETTINGS;
-    }
-  });
   const [playbackState, setPlaybackState] = useState('stopped');
   const [currentTime, setCurrentTime] = useState(0);
 
+  // Initialize basic instruments
   useEffect(() => {
-    const preloadAllInstruments = async () => {
-      console.log('🎵 Pre-loading all available instruments...');
-      const available = {};
-      const errors = {};
-      const loadedInstruments = {};
-
-      const loadPromises = Object.entries(INSTRUMENTS).map(async ([key, definition]) => {
-        try {
-          const newInstrument = definition.loader();
-          if (newInstrument.loaded && typeof newInstrument.loaded.then === 'function') {
-            await newInstrument.loaded;
-          }
-          available[key] = definition;
-          loadedInstruments[key] = newInstrument;
-          console.log(`✅ ${definition.name} pre-loaded.`);
-        } catch (err) {
-          errors[key] = `Failed to load samples for ${definition.name}.`;
-          console.log(`❌ ${definition.name}: ${errors[key]}`);
-        }
-      });
-      
-      await Promise.all(loadPromises);
-      instrumentsRef.current = loadedInstruments;
-      setAvailableInstruments(available);
-      setInstrumentErrors(errors);
-
-      const defaultInstrument = 'synth-piano';
-      if (available[defaultInstrument]) {
-        setInstrument(defaultInstrument);
-        currentInstrumentRef.current = instrumentsRef.current[defaultInstrument];
-      } else {
-        const firstKey = Object.keys(available)[0];
-        setInstrument(firstKey);
-        currentInstrumentRef.current = instrumentsRef.current[firstKey];
+    const instruments = {
+      'synth-piano': {
+        name: 'Synthesized Piano',
+        category: 'Piano',
+        visualColor: '#4F46E5',
+        visualType: 'flowing'
+      },
+      'electric-piano': {
+        name: 'Electric Piano',
+        category: 'Piano',
+        visualColor: '#DC2626',
+        visualType: 'electric'
+      },
+      'synth-pad': {
+        name: 'Synth Pad',
+        category: 'Synthesizer',
+        visualColor: '#059669',
+        visualType: 'atmospheric'
       }
-
-      console.log(`🎹 ${Object.keys(available).length} instruments ready, ${Object.keys(errors).length} failed`);
-      setIsInstrumentLoading(false);
     };
-
-    preloadAllInstruments();
+    
+    setAvailableInstruments(instruments);
   }, []);
-
-  const loadInstrument = useCallback((instrumentKey) => {
-    if (!instrumentsRef.current[instrumentKey]) {
-      console.error(`Instrument ${instrumentKey} is not loaded or available.`);
-      return;
-    }
-    if (instrument === instrumentKey) return;
-    console.log(`🎹 Switching to: ${availableInstruments[instrumentKey].name}`);
-    currentInstrumentRef.current = instrumentsRef.current[instrumentKey];
-    setInstrument(instrumentKey);
-  }, [availableInstruments, instrument]);
 
   const initializeAudio = useCallback(async () => {
     if (isInitialized) return;
     
-    if (isInstrumentLoading) {
-        console.log("Waiting for instruments to finish pre-loading...");
-    }
-    
     try {
       console.log('🎵 Initializing audio context...');
+      
+      // Start Tone.js
       await Tone.start();
       
-      const volume = new Tone.Volume(Tone.gainToDb(audioSettings.volume)).toDestination();
-      const limiter = new Tone.Limiter(-1).connect(volume);
-      const reverb = new Tone.Reverb({ decay: 1.5, wet: audioSettings.reverb }).connect(limiter);
-      const chorus = new Tone.Chorus({ frequency: 1.5, delayTime: 3.5, depth: 0.7, feedback: 0.1, wet: audioSettings.chorus }).connect(reverb).start();
-      const eq = new Tone.EQ3({ low: audioSettings.bassGain || 0, mid: audioSettings.midGain || 0, high: audioSettings.trebleGain || 0 }).connect(chorus);
-      effectsRef.current = { volume, reverb, chorus, eq, limiter };
+      // Create effects chain
+      const volume = new Tone.Volume(-3).toDestination();
+      const reverb = new Tone.Reverb({ decay: 1.5, wet: 0.3 }).connect(volume);
+      const chorus = new Tone.Chorus(4, 2.5, 0.5).connect(reverb).start();
       
-      Object.values(instrumentsRef.current).forEach(inst => {
-          inst.connect(effectsRef.current.eq);
-      });
-      console.log('🔗 Connected all instruments to effects chain');
-
+      effectsRef.current = { volume, reverb, chorus };
+      
+      // Create default instrument
+      instrumentRef.current = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: 'triangle' },
+        envelope: { 
+          attack: 0.005, 
+          decay: 0.3, 
+          sustain: 0.4, 
+          release: 1.2 
+        }
+      }).connect(chorus);
+      
+      // Setup transport time updates
       Tone.Transport.scheduleRepeat((time) => {
         Tone.Draw.schedule(() => {
           setCurrentTime(Tone.Transport.seconds);
@@ -112,189 +75,213 @@ export function AudioProvider({ children }) {
       }, '16n');
 
       setIsInitialized(true);
-      console.log('🎵 Audio system fully initialized');
+      console.log('✅ Audio system initialized');
       
     } catch (error) {
       console.error('❌ Failed to initialize audio:', error);
-      throw error;
-    }
-  }, [isInitialized, isInstrumentLoading, audioSettings]);
-
-  const scheduleNotes = useCallback((notes, songDuration, noteEmitter) => {
-    Tone.Transport.cancel(0);
-    const currentInstrument = currentInstrumentRef.current;
-    if (!currentInstrument || !notes || !Array.isArray(notes)) {
-      console.warn('Cannot schedule notes: missing instrument or notes');
-      return;
-    }
-    let scheduledCount = 0;
-    let errorCount = 0;
-    notes.forEach((originalNote, index) => {
-      const note = {
-        pitch: String(originalNote.pitch || ''),
-        time: Number(originalNote.time || 0),
-        duration: Number(originalNote.duration || 0.1),
-        velocity: Number(originalNote.velocity || 0.8),
-      };
-      if (!note.pitch || isNaN(note.time) || isNaN(note.duration) || isNaN(note.velocity)) {
-        console.error(`Discarding malformed note at index ${index}:`, originalNote);
-        errorCount++;
-        return;
-      }
-      if (note.velocity < 0.05 || note.duration < 0.02) {
-        return;
-      }
+      // Try a simpler setup if the complex one fails
       try {
-        Tone.Transport.schedule(time => {
-          try {
-            const activeInstrument = currentInstrumentRef.current;
-            if (activeInstrument) {
-              activeInstrument.triggerAttackRelease(
-                note.pitch, note.duration, time, note.velocity
-              );
-              if (noteEmitter) {
-                Tone.Draw.schedule(() => noteEmitter(originalNote), time);
-              }
-            }
-          } catch (playError) {
-            console.error(`Error playing note ${note.pitch}:`, playError);
-          }
-        }, note.time);
-        scheduledCount++;
-      } catch (scheduleError) {
-        console.error(`Error scheduling note at time ${note.time}:`, scheduleError);
-        errorCount++;
+        await Tone.start();
+        instrumentRef.current = new Tone.Synth().toDestination();
+        setIsInitialized(true);
+        console.log('✅ Audio initialized with fallback');
+      } catch (fallbackError) {
+        console.error('❌ Fallback also failed:', fallbackError);
       }
-    });
-    Tone.Transport.scheduleOnce(() => {
-      setPlaybackState('stopped');
-      console.log('🎵 Playback completed');
-    }, songDuration + 2);
-    console.log(`🎵 Scheduled ${scheduledCount} notes, ${errorCount} errors`);
-  }, []);
+    }
+  }, [isInitialized]);
+
+  const loadInstrument = useCallback(async (instrumentKey) => {
+    if (!isInitialized) return;
+    
+    setIsInstrumentLoading(true);
+    
+    try {
+      // Dispose old instrument
+      if (instrumentRef.current) {
+        instrumentRef.current.dispose();
+      }
+      
+      // Create new instrument based on key
+      let newInstrument;
+      
+      switch(instrumentKey) {
+        case 'electric-piano':
+          newInstrument = new Tone.PolySynth(Tone.FMSynth, {
+            harmonicity: 3,
+            modulationIndex: 14,
+            envelope: { 
+              attack: 0.01, 
+              decay: 0.2, 
+              sustain: 0.2, 
+              release: 0.8 
+            }
+          });
+          break;
+          
+        case 'synth-pad':
+          newInstrument = new Tone.PolySynth(Tone.AMSynth, {
+            harmonicity: 2.5,
+            envelope: { 
+              attack: 0.8, 
+              decay: 0.2, 
+              sustain: 0.9, 
+              release: 2.0 
+            }
+          });
+          break;
+          
+        default:
+          newInstrument = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: 'triangle' },
+            envelope: { 
+              attack: 0.005, 
+              decay: 0.3, 
+              sustain: 0.4, 
+              release: 1.2 
+            }
+          });
+      }
+      
+      // Connect to effects chain
+      if (effectsRef.current.chorus) {
+        newInstrument.connect(effectsRef.current.chorus);
+      } else {
+        newInstrument.toDestination();
+      }
+      
+      instrumentRef.current = newInstrument;
+      setInstrument(instrumentKey);
+      
+    } catch (error) {
+      console.error('Failed to load instrument:', error);
+    } finally {
+      setIsInstrumentLoading(false);
+    }
+  }, [isInitialized]);
 
   const play = useCallback((notes, songDuration, noteEmitter, startTime = 0) => {
-    if (!isInitialized) {
-      console.warn('Audio not initialized');
+    if (!isInitialized || !instrumentRef.current || !notes) {
+      console.warn('Cannot play: system not ready');
       return;
     }
+    
     try {
-      scheduleNotes(notes, songDuration, noteEmitter);
+      // Clear any scheduled events
+      Tone.Transport.cancel();
+      
+      // Schedule notes
+      let scheduledCount = 0;
+      notes.forEach(note => {
+        if (!note.pitch || !note.time || !note.duration) return;
+        
+        Tone.Transport.schedule(time => {
+          try {
+            instrumentRef.current.triggerAttackRelease(
+              note.pitch, 
+              note.duration, 
+              time, 
+              note.velocity || 0.8
+            );
+            
+            if (noteEmitter) {
+              Tone.Draw.schedule(() => noteEmitter(note), time);
+            }
+          } catch (err) {
+            console.error('Error playing note:', err);
+          }
+        }, note.time);
+        
+        scheduledCount++;
+      });
+      
+      console.log(`Scheduled ${scheduledCount} notes`);
+      
+      // Start transport
       Tone.Transport.start(Tone.now(), startTime);
       setPlaybackState('started');
-      console.log(`🎵 Started playback from ${startTime}s`);
+      
+      // Schedule stop
+      Tone.Transport.scheduleOnce(() => {
+        setPlaybackState('stopped');
+      }, songDuration + 2);
+      
     } catch (error) {
-      console.error('❌ Failed to start playback:', error);
+      console.error('Failed to start playback:', error);
     }
-  }, [isInitialized, scheduleNotes]);
+  }, [isInitialized]);
 
   const pause = useCallback(() => {
     if (!isInitialized) return;
-    try {
-      Tone.Transport.pause();
-      setPlaybackState('paused');
-      console.log('⏸️ Playback paused');
-    } catch (error) {
-      console.error('❌ Failed to pause:', error);
-    }
+    Tone.Transport.pause();
+    setPlaybackState('paused');
   }, [isInitialized]);
 
   const stop = useCallback(() => {
     if (!isInitialized) return;
+    
     try {
       Tone.Transport.stop();
       Tone.Transport.cancel();
-      if (currentInstrumentRef.current && currentInstrumentRef.current.releaseAll) {
-        currentInstrumentRef.current.releaseAll();
+      
+      if (instrumentRef.current && instrumentRef.current.releaseAll) {
+        instrumentRef.current.releaseAll();
       }
+      
       setCurrentTime(0);
       setPlaybackState('stopped');
-      console.log('⏹️ Playback stopped');
     } catch (error) {
-      console.error('❌ Failed to stop:', error);
+      console.error('Error stopping playback:', error);
     }
   }, [isInitialized]);
 
-  // Audio control functions
-  const setPlaybackRate = useCallback((rate) => { 
-    if (isInitialized) Tone.Transport.playbackRate = rate;
-  }, [isInitialized]);
-
-  const setVolume = useCallback((val) => { 
-    if (effectsRef.current.volume) {
-      effectsRef.current.volume.volume.value = Tone.gainToDb(val);
-    }
-  }, []);
-
-  const setReverb = useCallback((val) => { 
-    if (effectsRef.current.reverb) {
-      effectsRef.current.reverb.wet.value = val;
-    }
-  }, []);
-
-  const setChorus = useCallback((val) => { 
-    if (effectsRef.current.chorus) {
-      effectsRef.current.chorus.wet.value = val;
-    }
-  }, []);
-
-  const setBassGain = useCallback((val) => {
-    if (effectsRef.current.eq) {
-      effectsRef.current.eq.low.value = val;
-    }
-  }, []);
-
-  const setMidGain = useCallback((val) => {
-    if (effectsRef.current.eq) {
-      effectsRef.current.eq.mid.value = val;
-    }
-  }, []);
-
-  const setTrebleGain = useCallback((val) => {
-    if (effectsRef.current.eq) {
-      effectsRef.current.eq.high.value = val;
-    }
-  }, []);
-
-  const testNote = useCallback(async (noteName, duration = '8n') => {
-    if (!isInitialized || !currentInstrumentRef.current) return;
+  const testNote = useCallback((noteName, duration = '8n') => {
+    if (!isInitialized || !instrumentRef.current) return;
+    
     try {
-      currentInstrumentRef.current.triggerAttackRelease(noteName, duration, Tone.now(), 0.7);
+      instrumentRef.current.triggerAttackRelease(noteName, duration, Tone.now(), 0.7);
     } catch (error) {
       console.error('Failed to test note:', error);
     }
   }, [isInitialized]);
 
-  const getCurrentInstrument = useCallback(() => {
-    return availableInstruments[instrument] || null;
-  }, [availableInstruments, instrument]);
-
+  // Cleanup
   useEffect(() => {
     return () => {
-      const currentInstruments = instrumentsRef.current;
-      const currentEffects = effectsRef.current;
-      Object.values(currentInstruments).forEach(inst => {
-        if (inst && inst.dispose) {
-          try { inst.dispose(); } catch (e) { console.warn('Error disposing instrument:', e); }
-        }
-      });
-      Object.values(currentEffects).forEach(effect => {
+      if (instrumentRef.current) {
+        instrumentRef.current.dispose();
+      }
+      Object.values(effectsRef.current).forEach(effect => {
         if (effect && effect.dispose) {
-          try { effect.dispose(); } catch (e) { console.warn('Error disposing effect:', e); }
+          effect.dispose();
         }
       });
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
     };
   }, []);
 
   const value = {
-    isInitialized, isInstrumentLoading, instrument, availableInstruments,
-    instrumentErrors, audioSettings, playbackState, currentTime,
-    initializeAudio, loadInstrument, play, pause, stop, testNote,
-    getCurrentInstrument, setPlaybackRate, setVolume, setReverb,
-    setChorus, setBassGain, setMidGain, setTrebleGain,
+    isInitialized,
+    isInstrumentLoading,
+    instrument,
+    availableInstruments,
+    instrumentErrors: {},
+    playbackState,
+    currentTime,
+    initializeAudio,
+    loadInstrument,
+    play,
+    pause,
+    stop,
+    testNote
   };
 
-  return <AudioContext.Provider value={value}>{children}</AudioContext.Provider>;
+  return (
+    <AudioContext.Provider value={value}>
+      {children}
+    </AudioContext.Provider>
+  );
 }
 
 export const useAudio = () => {

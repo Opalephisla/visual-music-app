@@ -2,43 +2,152 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Lora:wght@500&display=swap" rel="stylesheet">
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
-    <meta
-      name="description"
-      content="Web site created using create-react-app"
-    />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
-    <!--
-      manifest.json provides metadata used when your web app is installed on a
-      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
-    -->
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
-    <!--
-      Notice the use of %PUBLIC_URL% in the tags above.
-      It will be replaced with the URL of the `public` folder during the build.
-      Only files inside the `public` folder can be referenced from the HTML.
-
-      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
-      work correctly both with client-side routing and a non-root public URL.
-      Learn how to configure a non-root public URL by running `npm run build`.
-    -->
-    <title>React App</title>
+    <meta name="description" content="Visual Music Interpreter - Experience music through stunning visuals" />
+    <title>Visual Music Interpreter</title>
+    <style>
+      /* Emergency styles in case CSS doesn't load */
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #000;
+        color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+          'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow: hidden;
+      }
+      
+      #root {
+        width: 100vw;
+        height: 100vh;
+        position: relative;
+      }
+      
+      /* Loading indicator */
+      #root:empty::before {
+        content: "Loading Visual Music Interpreter...";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: #a855f7;
+        font-size: 24px;
+        animation: pulse 2s ease-in-out infinite;
+      }
+      
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+      
+      /* Debug info */
+      .debug-info {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #0f0;
+        font-family: monospace;
+        font-size: 12px;
+        padding: 10px;
+        border: 1px solid #0f0;
+        z-index: 9999;
+        display: none;
+      }
+      
+      .debug-info.show {
+        display: block;
+      }
+      
+      noscript {
+        display: block;
+        text-align: center;
+        padding: 20px;
+        background: #ff0000;
+        color: #fff;
+      }
+    </style>
   </head>
   <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <noscript>You need to enable JavaScript to run this application.</noscript>
+    
+    <!-- Main React root -->
     <div id="root"></div>
-    <!--
-      This HTML file is a template.
-      If you open it directly in the browser, you will see an empty page.
-
-      You can add webfonts, meta tags, or analytics to this file.
-      The build step will place the bundled scripts into the <body> tag.
-
-      To begin the development, run `npm start` or `yarn start`.
-      To create a production bundle, use `npm run build` or `yarn build`.
-    -->
+    
+    <!-- Debug info panel (hidden by default) -->
+    <div id="debug-info" class="debug-info">
+      <div>Page loaded: <span id="load-time"></span></div>
+      <div>React root: <span id="react-status">Waiting...</span></div>
+      <div>Errors: <span id="error-count">0</span></div>
+    </div>
+    
+    <script>
+      // Debug helper
+      (function() {
+        const debugEnabled = window.location.search.includes('debug=true');
+        const debugPanel = document.getElementById('debug-info');
+        const loadTime = document.getElementById('load-time');
+        const reactStatus = document.getElementById('react-status');
+        const errorCount = document.getElementById('error-count');
+        
+        if (debugEnabled && debugPanel) {
+          debugPanel.classList.add('show');
+          loadTime.textContent = new Date().toLocaleTimeString();
+        }
+        
+        // Monitor React mounting
+        let errors = 0;
+        const rootElement = document.getElementById('root');
+        
+        if (rootElement) {
+          // Create MutationObserver to detect when React renders
+          const observer = new MutationObserver((mutations) => {
+            if (rootElement.children.length > 0) {
+              console.log('React app mounted successfully');
+              if (reactStatus) reactStatus.textContent = 'Mounted';
+              observer.disconnect();
+            }
+          });
+          
+          observer.observe(rootElement, { childList: true });
+          
+          // Timeout check
+          setTimeout(() => {
+            if (rootElement.children.length === 0) {
+              console.error('React app failed to mount after 5 seconds');
+              if (reactStatus) reactStatus.textContent = 'Failed to mount';
+              
+              // Create fallback content
+              rootElement.innerHTML = `
+                <div style="display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column;">
+                  <h1 style="color: #ff6b6b;">Loading Error</h1>
+                  <p>The application failed to load. Please check the console for errors.</p>
+                  <button onclick="location.reload()" style="padding: 10px 20px; margin-top: 20px; background: #a855f7; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                    Reload Page
+                  </button>
+                </div>
+              `;
+            }
+          }, 5000);
+        }
+        
+        // Error tracking
+        window.addEventListener('error', (event) => {
+          errors++;
+          if (errorCount) errorCount.textContent = errors;
+          console.error('Runtime error:', event.error);
+        });
+        
+        window.addEventListener('unhandledrejection', (event) => {
+          errors++;
+          if (errorCount) errorCount.textContent = errors;
+          console.error('Unhandled promise rejection:', event.reason);
+        });
+      })();
+    </script>
   </body>
 </html>
