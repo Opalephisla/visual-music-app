@@ -1,14 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { Midi } from '@tonejs/midi';
 import * as Tone from 'tone';
 
-// Import context and hooks
 import { useAudio } from './context/AudioContext';
 import { useMidi } from './hooks/useMidi';
 import { useCanvas } from './hooks/useCanvas';
 import { useSettings } from './hooks/useSettings';
 
-// Import components
 import Header from './components/Header';
 import LoadingOverlay from './components/LoadingOverlay';
 import StatsDisplay from './components/StatsDisplay';
@@ -16,7 +14,9 @@ import MidiGeneratorUI from './components/MidiGeneratorUI';
 import VirtualPiano from './components/VirtualPiano';
 import Footer from './components/Footer';
 
-// Start Screen Component
+const MemoizedHeader = memo(Header);
+const MemoizedVirtualPiano = memo(VirtualPiano);
+
 function StartScreen({ onStart }) {
   const canvasRef = useRef(null);
 
@@ -27,7 +27,6 @@ function StartScreen({ onStart }) {
     const ctx = canvas.getContext('2d');
     let animationFrameId;
 
-    // Simple star animation
     const stars = Array.from({ length: 100 }, () => ({
       x: Math.random(),
       y: Math.random(),
@@ -49,7 +48,8 @@ function StartScreen({ onStart }) {
       
       ctx.fillStyle = '#ffffff';
       stars.forEach(star => {
-        star.y = (star.y + star.speed) % 1;
+        star.y = (star.y + star.speed * 0.01);
+        if (star.y > 1) star.y = 0;
         ctx.globalAlpha = star.size / 2;
         ctx.beginPath();
         ctx.arc(star.x * canvas.width, star.y * canvas.height, star.size, 0, Math.PI * 2);
@@ -89,52 +89,24 @@ function StartScreen({ onStart }) {
   );
 }
 
-// Main App Component
 export default function App() {
   const canvasRef = useRef(null);
   
-  // Audio context
   const { 
-    isInitialized, 
-    initializeAudio, 
-    play, 
-    pause, 
-    stop, 
-    currentTime, 
-    playbackState, 
-    instrument, 
-    loadInstrument, 
-    availableInstruments, 
-    isInstrumentLoading,
-    testNote
+    isInitialized, initializeAudio, play, pause, stop, currentTime, playbackState, 
+    instrument, loadInstrument, availableInstruments, isInstrumentLoading, testNote
   } = useAudio();
   
-  // Settings
   const { visualSettings, audioSettings, updateVisualSettings, updateAudioSettings } = useSettings();
   
-  // State
   const [quality, setQuality] = useState('high');
   const [isGeneratorOpen, setIsGeneratorOpen] = useState(false);
   
-  // MIDI data
   const { 
-    notes, 
-    pedalEvents, 
-    songDuration, 
-    title, 
-    composer, 
-    availablePieces, 
-    currentPieceKey, 
-    octaveRange, 
-    totalWhiteKeys, 
-    isLoading: isMidiLoading, 
-    loadingText, 
-    loadPiece, 
-    loadMidiFile, 
-    generateRandomPiece 
+    notes, pedalEvents, songDuration, title, composer, availablePieces, currentPieceKey, 
+    octaveRange, totalWhiteKeys, isLoading: isMidiLoading, loadingText, loadPiece, loadMidiFile, generateRandomPiece 
   } = useMidi();
 
-  // Canvas hook
   const { noteEmitter, stats } = useCanvas(canvasRef, {
     notes, 
     visualSettings: { ...visualSettings, playbackState },
@@ -146,87 +118,76 @@ export default function App() {
   const [isPedalActive, setIsPedalActive] = useState(false);
   const [activeNotes, setActiveNotes] = useState([]);
 
-  // Initialize default piece
   useEffect(() => {
     if (isInitialized && loadPiece && !currentPieceKey) {
       loadPiece('clair_de_lune', quality);
     }
   }, [isInitialized, quality, loadPiece, currentPieceKey]);
 
-  // Update pedal and active notes
   useEffect(() => {
     if (pedalEvents && notes) {
       const active = pedalEvents.some(p => currentTime >= p[0] && currentTime < p[1]);
       setIsPedalActive(active);
-      const activeN = notes.filter(note => 
-        currentTime >= note.time && currentTime < note.time + note.duration
-      );
+      const activeN = notes.filter(note => currentTime >= note.time && currentTime < note.time + note.duration);
       setActiveNotes(activeN);
     }
   }, [currentTime, pedalEvents, notes]);
 
-  // Handlers
-  const handlePlayPause = () => {
+  const handlePlayPause = useCallback(() => {
     if (!notes || notes.length === 0) return;
-    
     if (playbackState === 'started') {
-      pause && pause();
+      pause();
     } else {
-      play && play(notes, songDuration, noteEmitter, currentTime);
+      play(notes, songDuration, noteEmitter, currentTime);
     }
-  };
+  }, [playbackState, pause, play, notes, songDuration, noteEmitter, currentTime]);
 
-  const handleRestart = () => {
+  const handleRestart = useCallback(() => {
     if (!notes || notes.length === 0) return;
-    stop && stop();
-    setTimeout(() => play && play(notes, songDuration, noteEmitter, 0), 50);
-  };
+    stop();
+    setTimeout(() => play(notes, songDuration, noteEmitter, 0), 50);
+  }, [stop, play, notes, songDuration, noteEmitter]);
   
-  const handlePieceChange = (pieceKey) => { 
-    stop && stop(); 
-    loadPiece && loadPiece(pieceKey, quality); 
-  };
+  const handlePieceChange = useCallback((pieceKey) => { 
+    stop(); 
+    loadPiece(pieceKey, quality); 
+  }, [stop, loadPiece, quality]);
   
-  const handleFileChange = (file) => { 
-    stop && stop(); 
-    loadMidiFile && loadMidiFile(file, quality); 
-  };
+  const handleFileChange = useCallback((file) => { 
+    stop(); 
+    loadMidiFile(file, quality); 
+  }, [stop, loadMidiFile, quality]);
   
-  const handleInstrumentChange = async (instrumentKey) => {
+  const handleInstrumentChange = useCallback(async (instrumentKey) => {
     if (!instrumentKey || instrument === instrumentKey) return;
     const wasPlaying = playbackState === 'started';
     const currentTrackTime = currentTime;
     
-    if (wasPlaying) stop();
+    if (wasPlaying) {
+      pause();
+    }
+    
     await loadInstrument(instrumentKey);
     
     if (wasPlaying && notes) {
-      setTimeout(() => play(notes, songDuration, noteEmitter, currentTrackTime), 150);
+      play(notes, songDuration, noteEmitter, currentTrackTime);
     }
-  };
+  }, [instrument, playbackState, currentTime, pause, loadInstrument, notes, play, songDuration, noteEmitter]);
 
-  const handleGenerate = (options) => {
-    stop && stop();
-    generateRandomPiece && generateRandomPiece({ ...options, quality });
+  const handleGenerate = useCallback((options) => {
+    stop();
+    generateRandomPiece({ ...options, quality });
     setIsGeneratorOpen(false);
-  };
+  }, [stop, generateRandomPiece, quality]);
 
   const handleDownloadMidi = () => {
     if (!notes || notes.length === 0) return;
-    
     const midi = new Midi();
     const track = midi.addTrack();
     track.name = title;
-    
     notes.forEach(note => {
-      track.addNote({ 
-        name: note.pitch, 
-        time: note.time, 
-        duration: note.duration, 
-        velocity: note.velocity 
-      });
+      track.addNote({ name: note.pitch, time: note.time, duration: note.duration, velocity: note.velocity });
     });
-    
     const blob = new Blob([midi.toArray()], { type: "audio/midi" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -242,75 +203,38 @@ export default function App() {
     }
   }, [testNote, isInitialized]);
   
-  // Show start screen if not initialized
   if (!isInitialized) {
     return <StartScreen onStart={initializeAudio} />;
   }
 
-  // Main render
   return (
     <div className="w-screen h-screen flex flex-col bg-black text-gray-200 overflow-hidden">
-      {isGeneratorOpen && (
-        <MidiGeneratorUI 
-          onGenerate={handleGenerate} 
-          onCancel={() => setIsGeneratorOpen(false)} 
-        />
-      )}
-      
-      {(isMidiLoading || isInstrumentLoading) && (
-        <LoadingOverlay text={isMidiLoading ? loadingText : 'Loading Instrument...'} />
-      )}
-
-      <Header 
-        title={title || 'Visual Music Interpreter'} 
-        composer={composer || 'Select a piece'} 
-        availablePieces={availablePieces} 
-        currentPieceKey={currentPieceKey}
-        instrumentList={availableInstruments} 
-        instrument={instrument} 
-        onPieceChange={handlePieceChange}
-        onFileChange={handleFileChange} 
-        onInstrumentChange={handleInstrumentChange} 
-        onQualityChange={setQuality}
-        quality={quality} 
-        onOpenGenerator={() => setIsGeneratorOpen(true)}
+      {isGeneratorOpen && <MidiGeneratorUI onGenerate={handleGenerate} onCancel={() => setIsGeneratorOpen(false)} />}
+      {(isMidiLoading || isInstrumentLoading) && <LoadingOverlay text={isMidiLoading ? loadingText : 'Loading Instrument...'} />}
+      <MemoizedHeader 
+        title={title || 'Visual Music Interpreter'} composer={composer || 'Select a piece'} availablePieces={availablePieces} 
+        currentPieceKey={currentPieceKey} instrumentList={availableInstruments} instrument={instrument} onPieceChange={handlePieceChange}
+        onFileChange={handleFileChange} onInstrumentChange={handleInstrumentChange} onQualityChange={setQuality}
+        quality={quality} onOpenGenerator={() => setIsGeneratorOpen(true)}
       />
-      
       <main className="flex-grow flex flex-col relative">
-        {/* Visualizer Canvas */}
         <div className="flex-grow relative">
-          <canvas 
-            ref={canvasRef} 
-            className="absolute inset-0 w-full h-full" 
-            style={{ display: 'block' }}
-          />
-          {visualSettings.showStats && (
-            <StatsDisplay stats={stats} noteCount={notes ? notes.length : 0} />
-          )}
+          <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ display: 'block' }}/>
+          {visualSettings.showStats && <StatsDisplay stats={stats} noteCount={notes ? notes.length : 0} />}
         </div>
-        
-        {/* Virtual Piano */}
         {visualSettings.pianoVisible && (
           <div className="w-full px-4 py-2 bg-black/50">
-            <VirtualPiano
-              midiData={{ octaveRange, totalWhiteKeys }}
-              activeNotes={activeNotes}
-              onKeyPress={handlePianoKeyPress}
-              settings={visualSettings}
+            <MemoizedVirtualPiano
+              midiData={{ octaveRange, totalWhiteKeys }} activeNotes={activeNotes}
+              onKeyPress={handlePianoKeyPress} settings={visualSettings}
             />
           </div>
         )}
       </main>
-
       <Footer
-        onPlayPause={handlePlayPause}
-        onRestart={handleRestart}
-        onDownloadMidi={handleDownloadMidi}
-        isPedalActive={isPedalActive}
-        visualSettings={visualSettings}
-        audioSettings={audioSettings}
-        updateVisualSettings={updateVisualSettings}
-        updateAudioSettings={updateAudioSettings}
+        onPlayPause={handlePlayPause} onRestart={handleRestart} onDownloadMidi={handleDownloadMidi}
+        isPedalActive={isPedalActive} visualSettings={visualSettings} audioSettings={audioSettings}
+        updateVisualSettings={updateVisualSettings} updateAudioSettings={updateAudioSettings}
       />
     </div>
   );
